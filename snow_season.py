@@ -1,16 +1,25 @@
+"""
+Vestaboard Season Snow Totals — Open-Meteo, daily 5:00 MT
+- Sums daily snowfall since Oct 1 (current year)
+- Stores totals locally so they only increase
+- Formats EXACTLY 6 lines, each ≤22 characters
+- Timestamp uses 24-hour time: UPDATED NOV 12 05:00
+"""
+
 import os, json, requests
 from datetime import datetime, timedelta, timezone
 
 # ---------- CONFIG ----------
-RW_KEY = os.getenv("VESTABOARD_RW_KEY")  # loaded from GitHub Secrets
+RW_KEY = os.getenv("VESTABOARD_RW_KEY")  # GitHub Actions secret
 RW_URL = "https://rw.vestaboard.com/"
 DATA_FILE = "season_totals.json"
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_TZ = "America/Denver"
 
-MT = timezone(timedelta(hours=-7))  # MT for timestamp
+MT = timezone(timedelta(hours=-7))  # Mountain Time (approx winter)
 
+# Resorts (name, lat, lon)
 LOCATIONS = [
     ("JHMR",     43.585, -110.826),
     ("TARGHEE",  43.789, -110.958),
@@ -18,8 +27,11 @@ LOCATIONS = [
     ("VAIL",     39.606, -106.355),
 ]
 
+
+# ---------- HELPERS ----------
 def inches(cm):
     return cm * 0.3937007874
+
 
 def load_totals():
     if os.path.exists(DATA_FILE):
@@ -27,11 +39,14 @@ def load_totals():
             return json.load(f)
     return {name: 0.0 for name, _, _ in LOCATIONS}
 
+
 def save_totals(totals):
     with open(DATA_FILE, "w") as f:
         json.dump(totals, f, indent=2)
 
+
 def fetch_season_total(lat, lon):
+    """Pull cumulative snowfall since Oct 1 via Open-Meteo."""
     start_date = f"{datetime.now().year}-10-01"
     today = datetime.now(timezone.utc).date().isoformat()
 
@@ -51,19 +66,37 @@ def fetch_season_total(lat, lon):
     total_cm = sum(v for v in days if isinstance(v, (int, float)))
     return round(inches(total_cm), 1)
 
-def row(label, val):
-    vs = f'{val:.1f}"'
-    dots = max(1, 22 - len(label) - len(vs))
-    return (label + "." * dots + vs)[:22]
+
+def row(label, val, width=22):
+    """Label.....3.4" formatted safely under 22 chars."""
+    lbl = label.upper()
+    vstr = f'{val:.1f}"'  # ex: 3.4"
+    dots = width - len(lbl) - len(vstr)
+    if dots < 1:
+        dots = 1
+    return (lbl + "." * dots + vstr)[:width]
+
 
 def format_board(totals):
+    """Return EXACTLY 6 lines, each ≤22 chars."""
+
     lines = []
-    lines.append(" SEASON SNOW TOTALS ".center(22))
+
+    # Line 1 — centered title
+    title = "SEASON SNOW TOTALS"
+    lines.append(title.center(22)[:22])
+
+    # Lines 2–5 — resort totals
     for name, _, _ in LOCATIONS:
         lines.append(row(name, totals.get(name, 0.0)))
-    ts = datetime.now(MT).strftime("UPDATED  %b %d %I:%M %p").upper()
-    lines.append(ts.center(22))
+
+    # Line 6 — updated timestamp, 24h time to fit width
+    # Example: UPDATED NOV 12 05:00
+    ts = datetime.now(MT).strftime("UPDATED %b %d %H:%M").upper()
+    lines.append(ts.center(22)[:22])
+
     return "\n".join(lines)
+
 
 def post_to_vestaboard(text):
     resp = requests.post(
@@ -77,9 +110,12 @@ def post_to_vestaboard(text):
     )
     resp.raise_for_status()
 
+
 def main():
     old = load_totals()
     new = {}
+
+    # Compute new totals
     for (name, lat, lon) in LOCATIONS:
         try:
             val = fetch_season_total(lat, lon)
@@ -91,6 +127,7 @@ def main():
 
     payload = format_board(new)
     post_to_vestaboard(payload)
+
 
 if __name__ == "__main__":
     main()
